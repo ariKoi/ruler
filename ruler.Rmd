@@ -1,0 +1,591 @@
+---
+title: "ruler"
+author: "Ari Koitsanos"
+date: "1/3/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# An envelope representation of prediction error 
+
+In a regression task, once a model or algorithm has been implemented and tested on out of sample data, we obtain the pair of actual and predicted response variable values, noted as $y$ and $\hat{y}$ respectively. In most cases we would expect $y$ and $\hat{y}$ values not to be too far away from each other. Now if we treat this pair as if they were a pair of nearly identical frequencies $f_y$ and $f_\hat{y}$ respectively, we can describe two closely spaced sinusoids as: 
+
+$$\boldsymbol{cos(2*π*f_y*t)}$$
+$$\boldsymbol{cos(2*π*f_\hat{y}*t)}$$
+where for simplicity we assume that the phase is zero. If we were then to add these two sinusoids we would obtain the beat note
+
+$$\boldsymbol{e(t) = cos(2*π*f_y*t) + cos(2*π*f_\hat{y}*t)}$$
+which can also be expressed as a product of two familiar quantities in statistical science: The mean and difference values or in the frequency analogy we are using here, the center and deviation frequencies. Those are defined as:
+
+$$\boldsymbol{f_c = 1/2 * (f_y + f_\hat{y})}$$
+$$\boldsymbol{f_Δ = 1/2 * (f_\hat{y} - f_y)}$$
+$f_Δ$ is usually much smaller than $f_c$. 
+
+In the usual statistical interpretation these correspond to the mean 
+
+$$\boldsymbol{mean = 1/2 * (\hat{y} + y)}$$
+and the residual or difference 
+
+$$\boldsymbol{residual = 1/2 * (y - \hat{y})}$$
+with the only difference being that we take half of the residual value in the frequency analogy. Similarly, the residual is usually much smaller than the mean value. In addition these two quantities form the basis of Tukey's classic mean-difference plot or what's known in biomedical applications as the Bland-Altman plot. Such plots have been widely used to examine the error residuals produced after a model has been built and applied on out of sample data, and as a tool to help with calibrating further the predictions in order to improve the model's predictive performance. 
+
+Continuing with the frequency analogy, McClellan et al. show how using the inverse Euler formula, the sum of the two sinusoids can be converted into a product of sinusoids involving the center frequency and deviation frequency: 
+
+$$\begin{eqnarray} e(t) &=& Re\{e^{j2πf_\hat{y}t}\} + Re\{e^{j2πf_yt}\} \\ &=& Re\{e^{j2π(f_c-f_Δ)t}\} + Re\{e^{j2π(f_c+f_Δ)t}\} \\ &=& Re\{e^{j2πf_ct} \cdot (e^{-j2πf_Δt} + e^{j2πf_Δt})\} && \text{(using the inverse Euler formula we get)} \\ &=& Re\{e^{j2πf_ct} \cdot (2\cdot cos(2πf_Δt))\} \\ &=& 2 \cdot cos(2πf_Δt) \cdot cos(2πf_ct) && \text{(result)} \end{eqnarray}$$
+
+In this way the residual error e can be thought of being expressed as a product of two sinusoids involving a deviation frequency and a center frequency with the frequency notion having replaced the model's true and predicted value pairs. Also note that in this formulation the residual error is a function of time, as is the case for any signal. This allows us to view errors as signals evolving through time and to thus visualize them in a different way from common practice. In addition, as shown below, this allows us to attempt the construction of features that could potentially help in improving the model's predictive performance (actually to generate new response values per each predictor vector as one would observe in a controlled experiment).  
+
+# Envelope Calculation And Plotting 
+
+As an example, suppose that we would like to model the maximum heart rate value during physical exercise based on a variety of predictor variables such as a person's breathing frequency, tidal volume and energy expenditure. After we have fitted a model or implemented an algorithm we obtain the out of sample residuals. One of the largest residuals obtained correspond to a case with an actual heart rate of 180 beats per minute while the predicted value was 140 beats per minute. Hence $Y$ = 180 and $\hat{y}$ = 140. Such heart rate values are quite high and less likely, and as a result they can be difficult to predict. In this case the mean value of the $y$ and $\hat{y}$ pair is 160 beats per minute, while half of the out of sample residual of this pair has the value of 20 beats per minute. In the frequency analogy those units would have been Hz. Then from the above result we would obtain a representation of the prediction error as 
+
+$$\begin{eqnarray} e(t) &=& 2 \cdot cos(2π(20)t) \cdot cos(2π(160)t) \end{eqnarray}$$
+
+```{r}
+par(mfrow = c(2,1))
+te <- seq(0, 0.1, by = 1/(2*160*10)) # 0.1 secs are 100 msecs i.e. 100/1000
+fdelta <- 2*cos(2*pi*20*te) 
+fc <- cos(2*pi*160*te) 
+plot(te*1000, fdelta, type = "l", main = "envelope components - center & deviation", xlab = "time (msecs)")
+lines(te*1000, fc, col = "blue")
+e <- fdelta * fc
+plot(te*1000, e, type = "l", col = "magenta", main = "envelope representation", xlab = "time (msecs)")
+lines(te*1000, fdelta, lty = "dashed", col = "blue")
+lines(te*1000, -fdelta, lty = "dashed", col = "blue")
+```
+
+The deviation frequency (error) stretches the center frequency (mean) to a signal with time-varying amplitude. The signal envelope is rising and falling with period $1/2 * 1/f_Δ = 1/2 * 1/20 = 25\ msec$, and with a frequency of $2*f_Δ = 40\ HZ$. For e(t) the spectrum contains frequency components at +-180 Hz and +-140 Hz. The time interval between nulls (zeros) of the envelope is the 25 msec period, which is dictated by the frequency deviation $f_Δ$. 
+
+One notion that stands out from this result, is that the error is now thought of as a signal that fluctuates with time. 
+
+Predicting a heart rate of 140 bpms when the actual is 180, is already a way off prediction. However let's see other examples of both bad and good predictions and visually compare the results. 
+
+## envelope function
+
+```{r}
+
+envelope <- function(y, yhat, te = NA, maxSecs = 0.1, plot = TRUE, both = FALSE, dev = TRUE){
+  # both: plot both the components and the envelope
+  # dev: plot the deviation envelope or not in the envelope representation plot
+  # maxSecs: max number of seconds in calculation and plot
+  # t is in msec so if non NA the values needs to be divided by 1e3 to convert to sec
+  # browser()
+  halfDev <- abs(y - yhat)/2
+  center <- mean(c(y, yhat))
+  if (is.na(te)) te <- seq(0, maxSecs, by = 1/(2*10*(center+halfDev))) # in sec 
+  fdelta <- 2*cos(2*pi*halfDev*te) 
+  fc <- cos(2*pi*center*te) 
+  e <- fdelta * fc
+  if (plot) {
+  ylims <- c(min(fdelta, fc), max(fdelta, fc))
+  if (both){
+    par(mfrow = c(2,1))
+    plot(te, fdelta, type = "l", main = "envelope components - center & deviation", xlab = "time (msec)", ylim = ylims, xaxt = "n")
+    x_ticks <- axis(1, at = seq(0, maxSecs, maxSecs/10), labels = 1e3*seq(0, maxSecs, maxSecs/10), cex.axis = 0.7)
+    abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+    lines(te, fc, col = "blue")
+    stopifnot(maxSecs >= (1/halfDev)) # "maxSecs is too short. Please increase the value."
+    abline(v = seq(1/halfDev, maxSecs, 1/halfDev), lwd = 1.5, lty = 4, col = "black") # marking the deviation period
+  }
+  plot(te, e, type = "l", col = "magenta", main = "envelope representation", xlab = "time (msec)", ylab = NA, xaxt = "n")
+  x_ticks <- axis(1, at = seq(0, maxSecs, maxSecs/10), labels = 1e3*seq(0, maxSecs, maxSecs/10), cex.axis = 0.7)
+  abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+  ePeriod <- 1/(2 * halfDev)
+  abline(v = seq(ePeriod, maxSecs, ePeriod), lwd = 1.5, lty = 4, col = "gray") # marking the envelope period
+  if (dev == TRUE) {
+   lines(te, fdelta, lty = "dashed", col = "blue")
+   lines(te, -fdelta, lty = "dashed", col = "blue")  
+  }
+  mtext("e", side = 2, col = "blue", line = 3)
+  list(
+  resData = data.frame(samples = length(te), halfDev = halfDev, center = center, ePeriodSecs = ePeriod, eFreq = 1/ePeriod), 
+  eRaw = tibble::as_tibble(data.frame(t = te, e = e, fdelta = fdelta, fc = fc))
+  )
+  } else {
+    e
+  }
+}
+```
+
+```{r}
+envelope(y = 180, yhat = 140, both = T) # underestimation
+# Some info on upper plot: deviation frequency 20 cycles per sec (Hz) or 20 cycles per 1000 msec. Since we are plotting here only 100 msecs we can see 20 / 1000/100 = 2 cycles that occur every 1000 * 1/20 = 50 msecs. Similarly for the center frequency: 160 / 1000/10 = 16 cycles every 1000 * 1/160 = 6.25 msecs.  
+# e frequency and period: 2*20 / 1000/10 = 4 cycles every 1000 * 1/(2*20) = 25 msecs. 
+envelope(y = 180, yhat = 140, te = 20/1e3, plot = F)
+envelope(y = 180, yhat = 140, te = 25/1e3, plot = F)
+envelope(y = 180, yhat = 140, te = 28/1e3, plot = F)
+envelope(y = 180, yhat = 140, te = 10.9/1e3, plot = F)
+
+envelope(y = 180, yhat = 100, both = T) # deviation now has greater frequency while center has a bit lower; less of the center signal is captured by the deviation envelope, e.g.
+envelope(y = 180, yhat = 70, both = T)
+envelope(y = 180, yhat = 30, both = T)
+# As prediction gets better:
+envelope(y = 180, yhat = 140, both = T)
+envelope(y = 180, yhat = 150, both = T) # deviation has lower frequency or envelope variation is slower
+envelope(y = 180, yhat = 160, both = T)
+envelope(y = 180, yhat = 170, both = T, maxSecs = 0.2)
+envelope(y = 180, yhat = 175, both = T, maxSecs = 0.4)
+envelope(y = 180, yhat = 179, both = T, maxSecs = 2) # and progressively more of the center signal is captured by the deviation envelope 
+
+# Same error in magnitude but in other direction i.e. overestimation
+envelope(y = 180, yhat = 220, both = T)
+envelope(y = 180, yhat = 260, both = T)
+envelope(y = 180, yhat = 300, both = T)
+envelope(y = 180, yhat = 600, both = T) # less and less of the deviation signal is captured by the envelope
+
+# Extremes:
+# Best possible prediction:
+envelope(y = 180, yhat = 180, both = T) # 0 deviation with its whole signal within the envelope
+# Worse possible prediction:
+envelope(y = 180, yhat = 0, both = T) # center & deviation match, while there is no envelope 
+# function should error on these cos it's either zero error so no envelope or error that is too high.
+
+# Different scale:
+envelope(y = 18, yhat = 14, both = T, maxSecs = 1) # same result as with y = 180, yhat = 140, just time axis is multiplied by 10 i.e. 10*100 msecs
+```
+
+The deviation frequency signal is the one that dictates the envelope representation. As the prediction gets better, it captures more and more of the center frequency signal, while as the prediction gets worse, it captures less and less of the center frequency signal. The more the deviation signal contains the center signal through time, the better is the prediction throughout future time. 
+
+If the unit of measurement is high relative to the error, then the envelope pattern is already delineated by the center component signal and hence the deviation signal is not needed to be shown.
+
+```{r}
+# previously: envelope(y = 180, yhat = 140, both = T) # underestimation
+envelope(y = 1800, yhat = 1760, both = T, dev = F) # maxSecs = 2 takes time
+# envelope(y = 1800, yhat = 1000, both = T, dev = F)
+```
+
+Compared to the previous example with the smaller measurement of 180 but same error, more of the signal is captured in this case, so such visuals are indicative of better predictive ability. 
+
+Another way to think about this is via the signal to noise ratio, which is ten times more when compared to the previous case:
+```{r}
+180/(40)
+1800/(40)
+```
+
+The deviation signal (error) modulates the center signal (response variable) by expanding and shrinking its amplitude. This will be useful when we want to derive features that are based on this varying amplitude center signal, in order to improve the predictive performance of a selected model. 
+
+# Deriving Response Values From The Envelope 
+
+Below there are three tries. The second one seems to be the correct one. 
+
+## First Approach
+
+$$\begin{eqnarray} e(t) &=& Re\{e^{j2πf_\hat{y}t}\} + Re\{e^{j2πf_yt}\} &=& cos(2πf_\hat{y}t) + cos(2πf_yt) \end{eqnarray}$$
+
+```{r}
+
+yNew <- function(t, y, yhat){
+  # t is in msec
+  # acos(e_t - cos(2*pi*yhat)) / (2*pi)
+  # browser()
+  e <- et(t, y, yhat)
+  # acos(e - cos(2*pi*yhat*t/1e3)) / (2*pi*t/1e3) + yhat # y in resid
+  y - acos(e - cos(2*pi*y*t/1e3)) / (2*pi*t/1e3) # yhat in resid
+  # y - acos(e - cos(2*pi*y*t/1e3)) / (2*pi*t/1e3) # yhat in resid
+}
+
+yNew(20, 180, 140)
+yNew(22, 180, 140)
+yNew(30, 180, 140)
+yNew(40, 180, 140)
+yNew(50, 180, 140)
+
+yhatExample <- 140
+plot(seq(0.001, 525, length.out = 21*2*40+1), sapply(seq(0.001, 525, length.out = 21*2*40+1), function(i) yNew(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(0.001, 50, length.out = 2*40+1), sapply(seq(0.001, 50, length.out = 2*40+1), function(i) yNew(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+
+
+plot(seq(25, 525, length.out = 20*2*40+1), sapply(seq(25, 525, length.out = 20*2*40+1), function(i) yNew(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(25, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(25, 50, length.out = 2*40+1), sapply(seq(25, 50, length.out = 2*40+1), function(i) yNew(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(25, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+
+
+```
+
+## Second Approach
+
+$$\begin{eqnarray} e(t) &=& 2 \cdot cos(2πf_Δt) \cdot cos(2πf_ct) && \text{(result)} \end{eqnarray}$$
+
+```{r}
+yNew2 <- function(t, y, yhat){
+  # t is in msec
+  # browser()
+  center <- mean(c(y, yhat))
+  e <- et(t, y, yhat)
+  residNew <- acos(e / (2 * cos(2*pi*center*t/1e3))) / (pi*t/1e3) # fdelta is half of the residual
+  if (y>yhat){
+   y - residNew 
+  } else {
+    y + residNew
+  }
+}
+
+yNew2(0, 180, 140) # NaN
+yNew2(0.0001, 180, 140) 
+yNew2(10, 180, 140)
+yNew2(20, 180, 140)
+yNew2(22, 180, 140)
+yNew2(30, 180, 140)
+yNew2(40, 180, 140)
+yNew2(50, 180, 140)
+yNew2(60, 180, 140)
+yNew2(70, 180, 140)
+yNew2(80, 180, 140)
+yNew2(90, 180, 140)
+yNew2(100, 180, 140)
+
+yhatExample <- 140 # 140, 100, 70, 30 # 150, 160, 170, 175, 179 # 220, 260, 300
+# rerun below adjusting for period
+
+plot(seq(0.001, 525, length.out = 21*2*40+1), sapply(seq(0.001, 525, length.out = 21*2*40+1), function(i) yNew2(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(0.001, 50, length.out = 2*40+1), sapply(seq(0.001, 50, length.out = 2*40+1), function(i) yNew2(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+
+
+# 179 : the bootstrap assumes perfect prediction
+
+yhatExample <- 160
+plot(seq(0.001, 525, length.out = 21*2*20+1), sapply(seq(0.001, 525, length.out = 21*2*20+1), function(i) yNew2(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 50, lty = "dotted")
+#
+plot(seq(0.001, 75, length.out = 2*20+1), sapply(seq(0.001, 75, length.out = 2*20+1), function(i) yNew2(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 75, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 50, lty = "dotted")
+
+yhatExample <- 220
+plot(seq(0.001, 525, length.out = 21*2*40+1), sapply(seq(0.001, 525, length.out = 21*2*40+1), function(i) yNew2(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(0.001, 50, length.out = 2*40+1), sapply(seq(0.001, 50, length.out = 2*40+1), function(i) yNew2(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+
+```
+
+## Third Approach
+
+$$\begin{eqnarray} e(t) &=& 2 \cdot cos(2πf_Δt) \cdot cos(2πf_ct) && \text{(result)} \end{eqnarray}$$
+
+```{r}
+yNew3 <- function(t, y, yhat){ # now solving for center since this is the signal whose amplitude is modulated
+  # t is in msec
+  # browser()
+  halfDev <- abs(y - yhat)/2
+  e <- et(t, y, yhat)
+  centerNew <- acos(e / (2 * cos(2*pi*halfDev*t/1e3))) / (2*pi*t/1e3)
+  # y - centerNew # yhat
+  # modulated center frequency is 2*halfDev=2*20=40 Hz which is the original residual value
+  # centerNew is like a residual value since it is stretched to follow the deviation signal. Center had a frequency of 160 and now it has a frequency of 40 i.e. the residual value.
+  centerNew + yhat # y
+}
+
+yNew3(0, 180, 140) # NaN
+yNew3(0.0001, 180, 140) 
+yNew3(10, 180, 140)
+yNew3(20, 180, 140)
+yNew3(22, 180, 140)
+yNew3(30, 180, 140)
+yNew3(40, 180, 140)
+yNew3(50, 180, 140)
+yNew3(60, 180, 140)
+yNew3(70, 180, 140)
+yNew3(80, 180, 140)
+yNew3(90, 180, 140)
+yNew3(100, 180, 140)
+
+yhatExample <- 140 # 140, 100, 70, 30 # 150, 160, 170, 175, 179 # 220, 260, 300
+# rerun below adjusting for period
+
+plot(seq(0.001, 525, length.out = 21*2*40+1), sapply(seq(0.001, 525, length.out = 21*2*40+1), function(i) yNew3(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(0.001, 50, length.out = 2*40+1), sapply(seq(0.001, 50, length.out = 2*40+1), function(i) yNew3(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+abline(h = 150, lty = "dotted", col = "purple")
+
+
+# 179 : the bootstrap assumes perfect prediction
+```
+
+## Selected Approach - Further exploration and coding 
+
+### yEnv and yEnvPlot functions
+
+The yNew2 approach seems the correct one since by keeping the center fixed and then substracting it from the e value we obtain the effect of the envelope where the original center signal is stretched towards the half-deviation signal. Hence I recode it here: 
+
+```{r}
+# yEnv <- yNew2 # as in y Enveloped
+yEnv <- function(y, yhat, te){
+  # t is in msec
+  # browser()
+  center <- mean(c(y, yhat))
+  e <- envelope(y, yhat, te, plot = FALSE)
+  residNew <- acos(e / (2 * cos(2*pi*center*te/1e3))) / (pi*te/1e3) # fdelta is half of the residual
+  if (y>yhat){
+   y - residNew 
+  } else {
+    y + residNew
+  }
+}
+
+yEnv(0, 180, 140) # NaN # At time zero the calculation does not make sense since this time point corresponds to the observed response value. We need to move forward in time even slightly to start obtaining response values. 
+yEnv(0.0001, 180, 140) 
+yEnv(10, 180, 140)
+yEnv(20, 180, 140)
+yEnv(22, 180, 140)
+yEnv(30, 180, 140)
+yEnv(40, 180, 140)
+yEnv(50, 180, 140)
+yEnv(60, 180, 140)
+yEnv(70, 180, 140)
+yEnv(80, 180, 140)
+yEnv(90, 180, 140)
+yEnv(100, 180, 140)
+```
+
+```{r}
+yhatExample <- 140 # 140, 100, 70, 30 # 150, 160, 170, 175, 179 # 220, 260, 300
+
+plot(seq(0.001, 525, length.out = 21*2*40+1), sapply(seq(0.001, 525, length.out = 21*2*40+1), function(i) yEnv(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(0.001, 50, length.out = 2*40+1), sapply(seq(0.001, 50, length.out = 2*40+1), function(i) yEnv(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+# 179 : the bootstrap assumes perfect prediction
+
+yhatExample <- 160
+plot(seq(0.001, 525, length.out = 21*2*20+1), sapply(seq(0.001, 525, length.out = 21*2*20+1), function(i) yEnv(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 50, lty = "dotted")
+#
+plot(seq(0.001, 75, length.out = 2*20+1), sapply(seq(0.001, 75, length.out = 2*20+1), function(i) yEnv(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 75, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 50, lty = "dotted")
+
+yhatExample <- 220
+plot(seq(0.001, 525, length.out = 21*2*40+1), sapply(seq(0.001, 525, length.out = 21*2*40+1), function(i) yEnv(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 525, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+#
+plot(seq(0.001, 50, length.out = 2*40+1), sapply(seq(0.001, 50, length.out = 2*40+1), function(i) yEnv(i, 180, yhatExample)), type = "l", xaxt = "n", xlab = "")
+x_ticks <- axis(1, at = seq(0.001, 50, length.out = 100), cex.axis = 0.7, las = 2)
+abline(v = x_ticks, lwd = 0.7, lty = 3, col = "lightgray")
+abline(h = yhatExample, lty = "dashed")
+abline(v = 25, lty = "dotted")
+
+###
+yEnvPlot <- function(y, yhat, tStart = 0.0001, tEnd = 1e3, ePeriod = 1e3/abs(y-yhat), length_out = (tEnd/ePeriod)*2*abs(y-yhat)+1, plot = TRUE){
+  # browser()
+  # if (length_out/1e3 < 1) {length_out <- length_out*100}
+  if (abs(y-yhat) >= 1) { # this to sample enough points without increasing the computational time
+   pows <- 10^c(0,0,2,4,6,8,10,12)
+   idx <- max(which(sapply(c(1,10,1e2,1e3,1e4,1e5,1e6,1e7), function(x) abs(y-yhat)%%x) / pows == 0))
+   length_out <- length_out / pows[idx] 
+  }
+  if (abs(y-yhat) >= 100 & tEnd > 1e2) {
+    tEnd <- ePeriod*1e2
+    message("Adjusted tEnd to ",  tEnd, " msec i.e. 100 times the envelope's period, since the envelope's period is only", paste0(" ", ePeriod), " Hz.")
+  }
+  # to be checked for abs(y-yhat) < 1
+  yenv <- sapply(seq(tStart, tEnd, length.out = length_out), function(i) yEnv(i, y, yhat))
+  if (plot) {
+  par(mfrow = c(2,1))
+  plot(seq(tStart, tEnd, length.out = length_out), yenv, type = "l", xaxt = "n", xlab = "", ylab = "y (enveloped)",  yaxt = "n", bty = "n", cex.lab = 0.7, lwd = 1.5)
+  x_ticks <- axis(1, at = round(seq(tStart, tEnd, length.out = 50), 2), cex.axis = 0.55, labels = FALSE, lwd = 0, lwd.ticks = 0.5, col.ticks = "lightgray")
+  text_y <- par("usr")[3] - abs(y-yhat)/10 # Substracting from y minimum one tenth of the range between y and yhat.
+  text(x = round(seq(tStart, tEnd, length.out = 50), 2), y = text_y, srt = 330, xpd = NA, labels = round(seq(tStart, tEnd, length.out = 50), 2), cex = 0.55, adj = 0.1)
+  y_ticks <- axis(2, at = round(seq(yhat, y, length.out = 10), 2), cex.axis = 0.55, las = 2, lwd = 0, lwd.ticks = 0.5, col.ticks = "lightgray")
+  abline(v = x_ticks, lwd = 0.5, lty = 3, col = "lightgray")
+  abline(h = y_ticks, lwd = 0.5, lty = 3, col = "lightgray")
+  abline(h = yhat, lty = 1, col = "darkorange", lwd = 0.7)
+  abline(h = y, lty = 1, col = "darkblue", lwd = 0.7)
+  abline(v = seq(0, tEnd, ePeriod), lty = "dotted", lwd = 0.5)
+  legend("bottomright", c("y", "yhat"), cex = 0.7, col = c("darkblue", "darkorange"), xpd = TRUE, horiz = TRUE, bty = "n", inset = c(-0.03, -0.2), lwd = 1.5, lty = 1)
+  # text.width = c(15, 30)
+  lines(seq(tStart, tEnd, length.out = length_out), sapply(seq(tStart, tEnd, length.out = length_out), function(i) yEnv(i, y, yhat)))
+  #
+  plot(seq(tStart, 2*ePeriod, length.out = 2*abs(y-yhat)+1), sapply(seq(tStart, 2*ePeriod, length.out = 2*abs(y-yhat)+1), function(i) yEnv(i, y, yhat)), type = "l", xaxt = "n", xlab = "time (msec)", ylab = "y (enveloped)", yaxt = "n", bty = "n", cex.lab = 0.7, lwd = 1.5)
+  x_ticks <- axis(1, at = round(seq(tStart, 2*ePeriod, length.out = 50), 2), cex.axis = 0.55, labels = FALSE, lwd = 0, lwd.ticks = 0.5, col.ticks = "lightgray")
+  text(x = round(seq(tStart, 2*ePeriod, length.out = 50), 2), y = text_y, srt = 330, xpd = NA, labels = round(seq(tStart, 2*ePeriod, length.out = 50), 2), cex = 0.55, adj = 0.1)
+  y_ticks <- axis(2, at = round(seq(yhat, y, length.out = 10), 2), cex.axis = 0.55, las = 2, lwd = 0, lwd.ticks = 0.5, col.ticks = "lightgray")
+  abline(v = x_ticks, lwd = 0.5, lty = 3, col = "lightgray")
+  abline(h = y_ticks, lwd = 0.5, lty = 3, col = "lightgray")
+  abline(h = yhat, lty = 1, col = "darkorange", lwd = 0.7)
+  abline(h = y, lty = 1, col = "darkblue", lwd = 0.7)
+  abline(v = ePeriod, lty = "dotted")
+  legend("bottomright", c("ePeriod zoom"), cex = 0.7, xpd = TRUE, horiz = TRUE, bty = "n", inset = c(-0.03, -0.2), lwd = 0)
+  lines(seq(tStart, 2*ePeriod, length.out = 2*abs(y-yhat)+1), sapply(seq(tStart, 2*ePeriod, length.out = 2*abs(y-yhat)+1), function(i) yEnv(i, y, yhat)))
+  par(mfrow = c(1,1))
+  } else {
+   return(yenv)  
+  }
+}
+# Instead of this, the more simple substracting from y minimum one tenth of the range between y and yhat is used. 
+# text_y <- ifelse(par("usr")[3] > 100, par("usr")[3] - 5, par("usr")[3] - 1)
+  # res_par <- as.character(max(which(sapply(c(0,20,50,1e2,1e4), function(x){par("usr")[3] >= x}))))
+  # use_par <- 0
+  # text_y <- switch(res_par, 
+  #        "1" = {use_par <- par("usr")[3]-1},
+  #        "2" = {use_par <- par("usr")[3]-2},
+  #        "3" = {use_par <- par("usr")[3]-5},
+  #        "4" = {use_par <- par("usr")[3]-10},
+  #        "5" = {use_par <- par("usr")[3]-20})
+
+yEnvPlot(180, 140)
+yEnvPlot(180, 220)
+yEnvPlot(180, 160)
+yEnvPlot(180, 200)
+yEnvPlot(180, 140, tEnd = 2e3)
+yEnvPlot(180, 140, tEnd = 3e3)
+yEnvPlot(180, 140, tEnd = 5e3) # after 5 secs
+yEnvPlot(180, 100) # terrible prediction
+yEnvPlot(180, 280) # terrible prediction
+yEnvPlot(18, 14, tEnd = 5e3) # other scale
+yEnvPlot(18, 22, tEnd = 5e3) # other scale
+yEnvPlot(8, 4, tEnd = 5e3) # other scale
+yEnvPlot(8, 10, tEnd = 10e3) # other scale
+yEnvPlot(0.8, 0.6, tEnd = 300e3) # other scale # interesting but needs check for correctness
+yEnvPlot(1800, 1400, tEnd = 5e3) # other scale # too large time end is taken care of internally
+yEnvPlot(1800, 1400) # checked
+yEnvPlot(18000, 14000) # checked
+yEnvPlot(180000, 140000) # checked
+yEnvPlot(1800000, 1400000) # checked, slower on the e plot due to the number of samples. Expected though due to the very high error.  
+yEnvPlot(180, 175, tEnd = 3e3) # small error
+ 
+# monthly frequency: 12 points in one year (one cycle)
+?forecast::findfrequency
+yEnv(1e3, 180, 140)
+yEnvFreqs <- sapply(1:100, function(i){
+ cat(paste0(i, "\n"))
+ yenv <- yEnvPlot(180, 140, tStart = i*25, tEnd = 3e3, plot = FALSE)
+ forecast::findfrequency(yenv) # 250 
+})
+as.integer(names(which.max(table(yEnvFreqs[yEnvFreqs != 1])))) # tEnd = 3e3 # 200
+as.integer(names(which.max(table(yEnvFreqs[yEnvFreqs != 1])))) # tEnd = 5e3 # 250
+plot(seq(25, 2500, 25), yEnvFreqs)
+#
+yEnvFreqs <- sapply(1:30, function(i){
+ cat(paste0(i, "\n"))
+ yenv <- yEnvPlot(180, 140, tStart = i*(1e3/abs(180-140)), tEnd = 1e3, plot = FALSE)
+ forecast::findfrequency(yenv) # 250 
+})
+median(yEnvFreqs[yEnvFreqs > 5]) # tEnd = 750 # 250
+plot(seq(25, 750, 25), yEnvFreqs)
+#
+
+# How many cycles for convergence. 
+yEnvConv <- function(y, yhat, cycleCorrection = 10, tEnd = 1e3, ePeriod = 1e3/abs(y-yhat), length_out = (tEnd/ePeriod)*2*abs(y-yhat)+1, plot = TRUE, freqThres = 5) {
+  # browser()
+  k <- 1:((tEnd/ePeriod)-cycleCorrection)
+  yEnvFreqs <- sapply(k, function(i){
+  cat(paste0(i, "\n"))
+  # Calculate the yEnv for consecutive multiples of the ePeriod, starting from the first ePeriod completion. 
+  yenv <- yEnvPlot(y, yhat, tStart = i*ePeriod, tEnd = tEnd, plot = FALSE)
+  forecast::findfrequency(yenv) 
+  })
+  if (plot) plot(seq(ePeriod, max(k)*ePeriod, ePeriod), yEnvFreqs) # from tStart to tEnd
+  res <- list(medianFreq = median(yEnvFreqs), 
+           modeFreq = as.numeric(names(sort(-table(yEnvFreqs)))[1]), 
+           medianFreqThres = median(yEnvFreqs[yEnvFreqs > freqThres]), 
+           maxStartTime = max(k)*ePeriod, 
+           resData = data.frame(yEnvFreqs = yEnvFreqs, yEnvTimes = k*ePeriod))
+  return(res)
+}
+
+yEnvConv(180, 140, cycleCorrection = 0)
+yEnvConv(180, 140, cycleCorrection = 0, tEnd = 200)
+unique(yEnvPlot(180, 140, tStart = 1e3, tEnd = 1e3, plot = FALSE))
+# [1] 180
+yEnvFreqsEx <- yEnvConv(180, 140, tEnd = 1700)
+yEnvFreqsEx
+yEnvConv(180, 140, tEnd = 1700) # converged
+yEnvConv(180, 140, tEnd = 1450)
+
+yEnvConv(180, 140, tEnd = 2e3)
+yEnvConv(180, 140, tEnd = 3e3, cycleCorrection = 50)
+yEnvConv(180, 140, tEnd = 5e3, cycleCorrection = 50)
+yEnvConv(180, 140, tEnd = 10e3, cycleCorrection = 200, freqThres = 5)
+
+plot(yenv)
+MASS::truehist(yenv, nbins = 30)
+
+```
+
+https://www.tenderisthebyte.com/blog/2019/04/25/rotating-axis-labels-in-r/
+
+See page 80 for recovering the envelope from the center signal. 
+
+Offers an explanation of the effect of subsampling methods like bootstrapping, observation weighting and under/over sampling. 
+
+See quora bookmarks for potentially related topic "Does it make sense to use the outcomes of a repeated experiment as a sample from an infinite population with independently and identically distribution and then do inference?"
+
+google "Dennis Cook’s envelope method"
+
+Note that derived Y values from this method are conditional on the type of model used in order to obtain residuals. 
+See rms text pdf 139 top for similar mention regarding the bootstrap. 
+
+
+
+# References 
+
+DSP First, A Multimedia Approach McClellan et al. 1998
+
+# Notes 
+
+https://rpruim.github.io/s341/S19/from-class/MathinRmd.html
+
+https://www.math.mcgill.ca/yyang/regression/RMarkdown/example.html
